@@ -1,27 +1,25 @@
-import os
+from storage import load_archive, add_message
+from embeddings import get_embedding
+from semantic_search import find_best_match
 
 
-def load_messages():
+def main():
 
-    folder = "messages"
+    archive = load_archive()
 
-    messages = []
+    user_message = input("Leave a message: ")
 
-    for filename in os.listdir(folder):
+    user_embedding = get_embedding(user_message)
 
-        filepath = os.path.join(folder, filename)
+    best_match = find_best_match(user_embedding, archive["messages"])
 
-        with open(filepath, "r") as file:
+    print()
+    print("☎ Someone answered:")
+    print()
+    print(best_match["text"])
 
-            message = {"text": file.read(), "filename": filename}
-
-            messages.append(message)
-
-    return messages
+    add_message(archive, user_message)
 
 
-messages = load_messages()
-
-for message in messages:
-
-    print(message["text"])
+if __name__ == "__main__":
+    main()
