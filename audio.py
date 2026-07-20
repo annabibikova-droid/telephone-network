@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import threading
 
 import keyboard
 import numpy as np
@@ -10,6 +11,27 @@ import soundfile as sf
 SAMPLE_RATE = 44100
 CHANNELS = 1
 CHUNK_DURATION = 0.1
+
+
+def play_beep(frequency=800, duration=0.6, volume=0.3):
+    """Play a short tone indicating that recording is about to begin."""
+
+    sample_count = int(SAMPLE_RATE * duration)
+    times = np.arange(sample_count) / SAMPLE_RATE
+
+    tone = volume * np.sin(2 * np.pi * frequency * times)
+
+    fade_samples = min(int(SAMPLE_RATE * 0.01), sample_count // 2)
+
+    if fade_samples > 0:
+        fade_in = np.linspace(0, 1, fade_samples)
+        fade_out = np.linspace(1, 0, fade_samples)
+
+        tone[:fade_samples] *= fade_in
+        tone[-fade_samples:] *= fade_out
+
+    sd.play(tone.astype(np.float32), SAMPLE_RATE)
+    sd.wait()
 
 
 def get_next_audio_filename():
@@ -66,7 +88,6 @@ def record_audio(max_duration=10, progress_callback=None):
             if elapsed >= max_duration:
                 break
 
-            # Stop recording early when the rotary is turned again.
             if keyboard.is_pressed("r"):
 
                 while keyboard.is_pressed("r"):
@@ -106,3 +127,17 @@ def play_audio(filename):
 
     sd.play(data, samplerate)
     sd.wait()
+
+
+def play_audio_async(filename):
+    """Play an audio file in the background."""
+
+    thread = threading.Thread(
+        target=play_audio,
+        args=(filename,),
+        daemon=True,
+    )
+
+    thread.start()
+
+    return thread

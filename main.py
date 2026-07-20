@@ -31,8 +31,7 @@ def handle_state(state, phone):
 
     if state == State.RECORDING:
 
-        print("\a", end="", flush=True)
-        time.sleep(0.5)
+        audio.play_beep()
 
         try:
             filename = audio.record_audio(
@@ -119,18 +118,25 @@ def handle_state(state, phone):
 
         time.sleep(0.8)
 
-        display.type_message(message["text"])
+        playback = None
 
         audio_filename = message.get("audio")
 
         if audio_filename:
             try:
-                audio.play_audio(audio_filename)
-
-                storage.increment_played_count(message["id"])
-
+                playback = audio.play_audio_async(audio_filename)
             except Exception as error:
                 print(f"\nPlayback failed: {error}")
+
+        display.type_message(message["text"])
+
+        if playback is not None:
+            playback.join()
+
+            try:
+                storage.increment_played_count(message["id"])
+            except Exception:
+                pass
 
         start = time.time()
 
