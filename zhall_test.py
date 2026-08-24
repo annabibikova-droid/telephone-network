@@ -1,7 +1,7 @@
 from gpiozero import Button
 from signal import pause
 
-hall = Button(27, pull_up=True, bounce_time=0.05)
+hall = Button(22, pull_up=True, bounce_time=0.05)
 
 
 def handset_down():
@@ -16,7 +16,7 @@ hall.when_pressed = handset_down
 hall.when_released = handset_lifted
 
 print("Hall sensor test running.", flush=True)
-print("Move the handset/magnet toward and away from the sensor.", flush=True)
+print("Move the magnet toward and away from the sensor.", flush=True)
 print("Press Ctrl+C to stop.", flush=True)
 print()
 
