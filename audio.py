@@ -3,7 +3,6 @@ import re
 import time
 import threading
 
-import keyboard
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
@@ -58,12 +57,16 @@ def get_next_audio_filename():
     return os.path.join(folder, filename)
 
 
-def record_audio(max_duration=10, progress_callback=None):
+def record_audio(
+    max_duration=20,
+    progress_callback=None,
+    stop_callback=None,
+):
     """
     Record audio until either:
 
     - max_duration seconds pass, or
-    - the user presses R.
+    - stop_callback returns True.
 
     Returns the saved audio filename.
     """
@@ -88,11 +91,7 @@ def record_audio(max_duration=10, progress_callback=None):
             if elapsed >= max_duration:
                 break
 
-            if keyboard.is_pressed("r"):
-
-                while keyboard.is_pressed("r"):
-                    time.sleep(0.01)
-
+            if stop_callback is not None and stop_callback():
                 break
 
             remaining = max_duration - int(elapsed)
@@ -141,3 +140,9 @@ def play_audio_async(filename):
     thread.start()
 
     return thread
+
+
+def stop_audio():
+    """Immediately stop any current sounddevice playback."""
+
+    sd.stop()
