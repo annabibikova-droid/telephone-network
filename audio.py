@@ -11,6 +11,13 @@ SAMPLE_RATE = 44100
 CHANNELS = 1
 CHUNK_DURATION = 0.1
 
+# USB sound card: microphone input and handset output.
+sd.default.device = (1, 1)
+
+# Boost quiet recordings while keeping their peaks below full scale.
+MAX_PLAYBACK_GAIN = 4.0
+PLAYBACK_PEAK_LIMIT = 0.9
+
 
 def play_beep(frequency=800, duration=0.6, volume=0.3):
     """Play a short tone indicating that recording is about to begin."""
@@ -120,9 +127,15 @@ def record_audio(
 
 
 def play_audio(filename):
-    """Play an audio file."""
+    """Play a recording with a capped volume boost."""
 
     data, samplerate = sf.read(filename)
+
+    peak = float(np.max(np.abs(data))) if data.size else 0.0
+
+    if peak > 0:
+        gain = min(MAX_PLAYBACK_GAIN, PLAYBACK_PEAK_LIMIT / peak)
+        data = data * gain
 
     sd.play(data, samplerate)
     sd.wait()
@@ -146,3 +159,4 @@ def stop_audio():
     """Immediately stop any current sounddevice playback."""
 
     sd.stop()
+
