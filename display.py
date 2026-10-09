@@ -103,7 +103,8 @@ def initialize_lcd():
         import pygame as pygame_module
 
         pygame = pygame_module
-        pygame.init()
+        pygame.display.init()
+        pygame.font.init()
 
         screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
         pygame.display.set_caption("Telephone Network")
