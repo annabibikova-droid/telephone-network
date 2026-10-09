@@ -1,128 +1,132 @@
-from state_machine import StateMachine, State, Event
+            reset_to_idle(phone)
+            return
 
-import audio
-import display
-import embeddings
-import hardware
-import semantic_search
-import speech
-import storage
-import time
+        if not interruptible_wait(0.8):
+            reset_to_idle(phone)
+            return
 
+        playback = None
 
-def reset_current_session(phone):
-    """Clear temporary data from the previous phone call."""
+        audio_filename = message.get("audio")
 
-    phone.current_recording = None
-    phone.current_transcript = None
-    phone.current_embedding = None
-    phone.matched_message = None
-    phone.match_score = None
+        if audio_filename:
+            try:
+                playback = audio.play_audio_async(audio_filename)
 
+            except Exception as error:
+                print(f"\nPlayback failed: {error}")
 
-def drain_rotary_events():
-    """Discard rotary turns that no longer belong to an active call."""
+        # Type the message while also watching
+        # for the handset being replaced.
+        completed_typing = type_message_interruptibly(message["text"], header=message_header)
 
-    while hardware.get_rotary_event() is not None:
-        pass
+        if not completed_typing:
+            reset_to_idle(phone)
+            return
 
+        # Wait for audio playback to finish,
+        # but continue monitoring the hook.
+        if playback is not None:
 
-def reset_to_idle(phone):
-    """Stop playback, clear the session, and return the phone to IDLE."""
+            while playback.is_alive():
 
-    audio.stop_audio()
+                if handset_replaced():
+                    reset_to_idle(phone)
+                    return
 
-    reset_current_session(phone)
+                display.update()
+                time.sleep(0.02)
 
-    drain_rotary_events()
+            try:
+                storage.increment_played_count(message["id"])
 
-    if phone.state != State.IDLE:
-        phone.change_state(State.IDLE)
+            except Exception:
+                pass
 
+        # Leave the message visible for 8 seconds,
+        # unless the handset is replaced first.
+        if not interruptible_wait(8):
+            reset_to_idle(phone)
+            return
 
-def handset_replaced():
-    """Return True if the handset is physically on the hook."""
+        new_state = phone.handle_event(Event.PLAYBACK_COMPLETE)
 
-    return hardware.handset_is_down()
+        reset_current_session(phone)
+        drain_rotary_events()
 
-
-def interruptible_wait(seconds):
-    """
-    Wait for a period of time while continuing to watch the hook.
-
-    Returns False if the handset was replaced.
-    Returns True if the entire wait completed.
-    """
-
-    start = time.time()
-
-    while time.time() - start < seconds:
-
-        if handset_replaced():
-            return False
-
-        display.update()
-        time.sleep(0.02)
-
-    return True
+        handle_state(new_state, phone)
 
 
-def type_message_interruptibly(text, header=""):
-    """Type on the LCD and terminal, retaining the location/date header."""
+def main():
 
-    prefix = f"{header}\n\n" if header else ""
-    display.draw_text(prefix, show_cursor=True, blink_cursor=False)
+    phone = StateMachine()
 
-    # Batch characters at the LCD refresh rate instead of rendering one
-    # expensive CRT frame per character on the Pi Zero.
-    start = time.monotonic()
-    visible_count = 0
-    character_delay = max(display.MESSAGE_SPEED, 0.011)
+    # If the program starts while the handset is
+    # already lifted, synchronize the software
+    # state with the physical phone.
+    if hardware.handset_is_lifted():
 
-    while visible_count < len(text):
-        if handset_replaced():
-            return False
+        reset_current_session(phone)
 
-        next_count = min(
-            len(text),
-            max(1, int((time.monotonic() - start) / character_delay) + 1),
-        )
-        if next_count > visible_count:
-            print(text[visible_count:next_count], end="", flush=True)
-            visible_count = next_count
-            display.draw_text(
-                prefix + text[:visible_count],
-                show_cursor=True,
-                blink_cursor=False,
-            )
+        new_state = phone.handle_event(Event.HOOK_LIFTED)
 
-        time.sleep(1 / display.MAX_REFRESH_RATE)
+        handle_state(new_state, phone)
 
-    print(flush=True)
-    display.draw_text(prefix + text, show_cursor=True)
-    return True
+    try:
+
+        while True:
+
+            display.update()
+
+            # -----------------------------
+            # HOOK EVENTS
+            # -----------------------------
+
+            hook_event = hardware.get_hook_event()
+
+            if hook_event == "HOOK_REPLACED":
+
+                if phone.state != State.IDLE:
+                    reset_to_idle(phone)
+
+                time.sleep(0.01)
+                continue
+
+            elif hook_event == "HOOK_LIFTED":
+
+                if phone.state == State.IDLE:
+
+                    reset_current_session(phone)
+
+                    new_state = phone.handle_event(Event.HOOK_LIFTED)
+
+                    handle_state(new_state, phone)
+
+            # -----------------------------
+            # ROTARY EVENTS
+            # -----------------------------
+
+            rotary_event = hardware.get_rotary_event()
+
+            if rotary_event == "ROTARY_TURNED":
+
+                new_state = phone.handle_event(Event.ROTARY_TURNED)
+
+                handle_state(new_state, phone)
+
+            time.sleep(0.01)
+
+    except KeyboardInterrupt:
+
+        print("\nTelephone Network stopped.")
+
+    finally:
+
+        audio.stop_audio()
+
+        hardware.rotary.close()
+        hardware.hook.close()
 
 
-def recording_should_stop():
-    """
-    Stop recording if:
-
-    - the handset is replaced, or
-    - the rotary dial is turned again.
-    """
-
-    if handset_replaced():
-        return True
-
-    rotary_event = hardware.get_rotary_event()
-
-    if rotary_event == "ROTARY_TURNED":
-        return True
-
-    return False
-
-
-def handle_state(state, phone):
-
-    if state is None:
-        return
+if __name__ == "__main__":
+    main()
