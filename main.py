@@ -61,28 +61,45 @@ def interruptible_wait(seconds):
         if handset_replaced():
             return False
 
+        display.update()
         time.sleep(0.02)
 
     return True
 
 
-def type_message_interruptibly(text):
-    """
-    Type the returned message while continuously checking the hook.
+def type_message_interruptibly(text, header=""):
+    """Type on the LCD and terminal, retaining the location/date header."""
 
-    Returns False if the handset is replaced while the message is typing.
-    """
+    prefix = f"{header}\n\n" if header else ""
+    display.draw_text(prefix, show_cursor=True, blink_cursor=False)
 
-    display.clear()
+    # Batch characters at the LCD refresh rate instead of rendering one
+    # expensive CRT frame per character on the Pi Zero.
+    start = time.monotonic()
+    visible_count = 0
+    character_delay = max(display.MESSAGE_SPEED, 0.011)
 
-    for character in text:
-
+    while visible_count < len(text):
         if handset_replaced():
             return False
 
-        print(character, end="", flush=True)
-        time.sleep(display.MESSAGE_SPEED)
+        next_count = min(
+            len(text),
+            max(1, int((time.monotonic() - start) / character_delay) + 1),
+        )
+        if next_count > visible_count:
+            print(text[visible_count:next_count], end="", flush=True)
+            visible_count = next_count
+            display.draw_text(
+                prefix + text[:visible_count],
+                show_cursor=True,
+                blink_cursor=False,
+            )
 
+        time.sleep(1 / display.MAX_REFRESH_RATE)
+
+    print(flush=True)
+    display.draw_text(prefix + text, show_cursor=True)
     return True
 
 
@@ -109,261 +126,3 @@ def handle_state(state, phone):
 
     if state is None:
         return
-
-    # -----------------------------
-    # RECORDING
-    # -----------------------------
-
-    if state == State.RECORDING:
-
-        audio.play_beep()
-
-        # If the user hung up during the beep,
-        # immediately cancel this call.
-        if handset_replaced():
-            reset_to_idle(phone)
-            return
-
-        try:
-            filename = audio.record_audio(
-                max_duration=20,
-                progress_callback=display.show_recording_progress,
-                stop_callback=recording_should_stop,
-            )
-
-            phone.current_recording = filename
-
-        except Exception as error:
-            display.terminal_print(f"Recording failed.\n\n{error}")
-
-            time.sleep(3)
-
-            reset_to_idle(phone)
-            return
-
-        # If recording stopped because the handset
-        # was replaced, do not process/save it.
-        if handset_replaced():
-            reset_to_idle(phone)
-            return
-
-        new_state = phone.handle_event(Event.RECORDING_FINISHED)
-
-        handle_state(new_state, phone)
-
-    # -----------------------------
-    # PROCESSING
-    # -----------------------------
-
-    elif state == State.PROCESSING:
-
-        if not interruptible_wait(0.75):
-            reset_to_idle(phone)
-            return
-
-        try:
-            phone.current_transcript = speech.transcribe_audio(phone.current_recording)
-
-            if handset_replaced():
-                reset_to_idle(phone)
-                return
-
-            new_embedding = embeddings.get_embedding(phone.current_transcript)
-
-            if handset_replaced():
-                reset_to_idle(phone)
-                return
-
-            archive = storage.load_archive()
-
-            existing_messages = archive["messages"]
-
-            phone.matched_message = semantic_search.find_best_match(
-                new_embedding,
-                existing_messages,
-            )
-
-            storage.add_message(
-                archive,
-                phone.current_transcript,
-                new_embedding,
-                phone.current_recording,
-            )
-
-        except Exception as error:
-            display.terminal_print(f"Processing failed.\n\n{error}")
-
-            time.sleep(4)
-
-            reset_to_idle(phone)
-            return
-
-        if handset_replaced():
-            reset_to_idle(phone)
-            return
-
-        display.searching(duration=2)
-
-        if handset_replaced():
-            reset_to_idle(phone)
-            return
-
-        if phone.matched_message is None:
-
-            display.terminal_print(
-                "Message saved.\n\n" "No earlier messages\n" "in the archive."
-            )
-
-            if not interruptible_wait(4):
-                reset_to_idle(phone)
-                return
-
-            reset_to_idle(phone)
-            return
-
-        new_state = phone.handle_event(Event.SEARCH_COMPLETE)
-
-        handle_state(new_state, phone)
-
-    # -----------------------------
-    # DISPLAYING MESSAGE
-    # -----------------------------
-
-    elif state == State.DISPLAYING_MESSAGE:
-
-        message = phone.matched_message
-
-        display.show_location(message)
-
-        if handset_replaced():
-            reset_to_idle(phone)
-            return
-
-        if not interruptible_wait(0.8):
-            reset_to_idle(phone)
-            return
-
-        playback = None
-
-        audio_filename = message.get("audio")
-
-        if audio_filename:
-            try:
-                playback = audio.play_audio_async(audio_filename)
-
-            except Exception as error:
-                print(f"\nPlayback failed: {error}")
-
-        # Type the message while also watching
-        # for the handset being replaced.
-        completed_typing = type_message_interruptibly(message["text"])
-
-        if not completed_typing:
-            reset_to_idle(phone)
-            return
-
-        # Wait for audio playback to finish,
-        # but continue monitoring the hook.
-        if playback is not None:
-
-            while playback.is_alive():
-
-                if handset_replaced():
-                    reset_to_idle(phone)
-                    return
-
-                time.sleep(0.02)
-
-            try:
-                storage.increment_played_count(message["id"])
-
-            except Exception:
-                pass
-
-        # Leave the message visible for 8 seconds,
-        # unless the handset is replaced first.
-        if not interruptible_wait(8):
-            reset_to_idle(phone)
-            return
-
-        new_state = phone.handle_event(Event.PLAYBACK_COMPLETE)
-
-        reset_current_session(phone)
-        drain_rotary_events()
-
-        handle_state(new_state, phone)
-
-
-def main():
-
-    phone = StateMachine()
-
-    # If the program starts while the handset is
-    # already lifted, synchronize the software
-    # state with the physical phone.
-    if hardware.handset_is_lifted():
-
-        reset_current_session(phone)
-
-        new_state = phone.handle_event(Event.HOOK_LIFTED)
-
-        handle_state(new_state, phone)
-
-    try:
-
-        while True:
-
-            display.update()
-
-            # -----------------------------
-            # HOOK EVENTS
-            # -----------------------------
-
-            hook_event = hardware.get_hook_event()
-
-            if hook_event == "HOOK_REPLACED":
-
-                if phone.state != State.IDLE:
-                    reset_to_idle(phone)
-
-                time.sleep(0.01)
-                continue
-
-            elif hook_event == "HOOK_LIFTED":
-
-                if phone.state == State.IDLE:
-
-                    reset_current_session(phone)
-
-                    new_state = phone.handle_event(Event.HOOK_LIFTED)
-
-                    handle_state(new_state, phone)
-
-            # -----------------------------
-            # ROTARY EVENTS
-            # -----------------------------
-
-            rotary_event = hardware.get_rotary_event()
-
-            if rotary_event == "ROTARY_TURNED":
-
-                new_state = phone.handle_event(Event.ROTARY_TURNED)
-
-                handle_state(new_state, phone)
-
-            time.sleep(0.01)
-
-    except KeyboardInterrupt:
-
-        print("\nTelephone Network stopped.")
-
-    finally:
-
-        audio.stop_audio()
-
-        hardware.rotary.close()
-        hardware.hook.close()
-
-
-if __name__ == "__main__":
-    main()
